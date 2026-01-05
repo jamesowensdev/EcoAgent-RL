@@ -50,8 +50,18 @@ class GridManager:
             if file_path.endswith(".tif") or file_path.endswith(".tiff"):
                 with rasterio.open(file_path) as src:
                     data = src.read(1).astype(np.float32)
-                    self.transform = src.transform
-                    self.crs = src.crs
+
+                    if src.nodata is not None:
+                        data = np.where(np.isclose(data, src.nodata), 0.0, data)
+
+                    if not hasattr(self, "crs"):
+                        self.crs = src.crs
+                        self.transform = src.transform
+                    elif self.crs != src.crs:
+                        self.logger.error(
+                            f"CRS mismatch between {self.crs} and {src.crs}"
+                        )
+                        return
 
             elif file_path.endswith(".npy"):
                 data = np.load(file_path).astype(np.float32)
