@@ -1,6 +1,8 @@
 import logging
+import os
 
 import numpy as np
+import rasterio
 
 
 class GridManager:
@@ -33,12 +35,53 @@ class GridManager:
             self.prey_layer = np.zeros(self.layer_shape, dtype=np.float32)
             self.logger.info("Prey layer not found in config. Initialised as empty.")
 
-        if not hasattr(self, "utility_map"):
-            self.utility_map = np.zeros(self.layer_shape, dtype=np.float32)
-            self.logger.info("Utility map not found in config. Initialised as empty.")
+        if not hasattr(self, "utility_layer"):
+            self.utility_ = np.zeros(self.layer_shape, dtype=np.float32)
+            self.logger.info("Utility layer not found in config. Initialised as empty.")
 
-    def load_landscape_layers(self, file_path=None, layer_type="resistance"):
-        return 0
+    def load_landscape_layers(self, file_path, layer_type):
+        self.logger.info(f"Attempting to load {layer_type} layer from {file_path}")
+
+        if not os.path.exists(file_path):
+            self.logger.error(f"File not found: {file_path}")
+            return
+
+        try:
+            if file_path.endswith(".tif") or file_path.endswith(".tiff"):
+                with rasterio.open(file_path) as src:
+                    data = src.read(1).astype(np.float32)
+                    self.transform = src.transform
+                    self.crs = src.crs
+
+            elif file_path.endswith(".npy"):
+                data = np.load(file_path).astype(np.float32)
+            else:
+                self.logger.error(f"Unsupported file format: {file_path}")
+                return
+        except Exception as e:
+            self.logger.error(f"Failed to parse {file_path} : {e}")
+            return
+
+        current_y, current_x = data.shape
+
+        if not hasattr(self, "size_x") or self.size_x is None:
+            self.size_x = current_x
+            self.size_y = current_y
+            self.logger.info(
+                f"Grid size set to {self.size_y} rows x {self.size_x} columns"
+            )
+        else:
+            if (current_y, current_x) != (self.size_y, self.size_x):
+                self.logger.error(
+                    f"Grid size mismatch: {current_y} rows x {current_x} columns vs {self.size_y} rows x {self.size_x} columns"
+                )
+                return
+
+        attr_name = f"{layer_type}_layer"
+        setattr(self, attr_name, data)
+        self.logger.info(
+            f"Succesfully loaded {attr_name}. Min: {np.min(data)} Max: {np.max(data)}"
+        )
 
     def _generate_spatial_anchors(self):
         return 0
