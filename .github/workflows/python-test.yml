@@ -31,4 +31,5 @@ jobs:
 
       - name: Run Tests with 95% Coverage Enforcement
         run: |
-          pytest --cov=src --cov-report=term-missing --cov-fail-under=95
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+                  python -m pytest --cov=src --cov-report=term-missing --cov-fail-under=95
