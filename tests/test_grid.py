@@ -176,3 +176,33 @@ def test_load_file_not_found(basic_config):
     # Should log error and return None without crashing
     gm.load_landscape_layers("non_existent_file.npy", "test")
     assert not hasattr(gm, "test_layer")
+
+
+def test_initialise_generic_fallback():
+    # Targets Line 46: Triggers when 'primary_layer' is not in config keys
+    gm = GridManager({"species_name": "default"})
+    assert gm.size_x == 100
+    assert hasattr(gm, "resistance_layer")
+
+
+def test_load_landscape_errors(basic_config, tmp_path):
+    gm = GridManager(basic_config)
+
+    # Targets Lines 81-85: Triggers the "File not found" error log
+    gm.load_landscape_layers("non_existent_file.npy", "error_test")
+
+    # Targets Lines 92-94: Triggers the "Unsupported file format" error log
+    bad_file = tmp_path / "unsupported.txt"
+    bad_file.write_text("this is a text file, not a map")
+    gm.load_landscape_layers(str(bad_file), "unsupported")
+
+
+def test_normalization_uniform_warning(basic_config):
+    # Targets Lines 144-145: Triggers the uniform layer warning
+    gm = GridManager(basic_config)
+
+    setattr(gm, "flat_layer", np.ones((100, 100), dtype=np.float32))
+    gm.layer_names.append("flat_layer")
+
+    # Normalizing a layer where max == min triggers the else block
+    gm._normalise_layers(["flat_layer"])
