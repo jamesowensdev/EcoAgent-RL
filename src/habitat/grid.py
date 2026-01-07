@@ -9,8 +9,10 @@ from src.utils.logger import setup_logger
 class GridManager:
     def __init__(self, config):
         self.logger = setup_logger("GRID")
-        self.config = config
+        self.config = config if config is not None else {}
 
+        self.size_x: int | None = None
+        self.size_y: int | None = None
         self.species = self.config.get("species_name", "default_species")
         profiles = self.config.get("species_profiles", {})
 
@@ -27,15 +29,20 @@ class GridManager:
             self.bio_profile.get("intimidation_decay_rate", 0.95)
         )
 
+
         if config and "primary_layer" in config:
             p_key = config["primary_layer"]
             self.load_landscape_layers(config[p_key], layer_type="resistance")
-        else:
+
+        if self.size_x is None:
             self._initialise_generic_grid()
 
+        assert self.size_x is not None
+        assert self.size_y is not None
         self.layer_shape = (self.size_y, self.size_x)
         self.intimidation_layer = np.zeros(self.layer_shape, dtype=np.float32)
         self.human_presence_layer = np.zeros(self.layer_shape, dtype=np.float32)
+
         if config:
             for key, path in config.items():
                 if key == "primary_layer" or key == config.get("primary_layer"):
@@ -60,6 +67,8 @@ class GridManager:
         )
         self._generate_spatial_anchors()
         self._normalise_layers()
+
+        self.stacked_layers = np.stack([getattr(self, name) for name in self.layer_names], axis = -1).astype(np.float32)
 
     def load_landscape_layers(self, file_path, layer_type):
         self.logger.info(f"Attempting to load {layer_type} layer from {file_path}")
@@ -96,7 +105,7 @@ class GridManager:
 
         current_y, current_x = data.shape
 
-        if not hasattr(self, "size_x") or self.size_x is None:
+        if self.size_x is None:
             self.size_y, self.size_x = data.shape
             self.logger.info(
                 f"Grid size set to {self.size_y} rows x {self.size_x} columns"
@@ -115,6 +124,8 @@ class GridManager:
         )
 
     def _generate_spatial_anchors(self):
+        assert self.size_x is not None
+        assert self.size_y is not None
         x_range = np.arange(self.size_x)
         y_range = np.arange(self.size_y)
         self.x_coords, self.y_coords = np.meshgrid(x_range, y_range, indexing="xy")
@@ -157,7 +168,9 @@ class GridManager:
                     f"Layer {attr} is uniform; no normalisation applied"
                 )
 
-    def _apply_padding(self, layer, x_max, x_min, y_max, y_min):
+    def _apply_padding(self, x_max, x_min, y_max, y_min):
+        assert self.size_x is not None
+        assert self.size_y is not None
         p_top = max(0, -y_min)
         p_bottom = max(0, y_max - self.size_y)
         p_left = max(0, -x_min)
@@ -166,12 +179,12 @@ class GridManager:
         v_y_min, v_y_max = max(0, y_min), min(self.size_y, y_max)
         v_x_min, v_x_max = max(0, x_min), min(self.size_x, x_max)
 
-        chunk = layer[v_y_min:v_y_max, v_x_min:v_x_max]
+        chunk = self.stacked_layers[v_y_min:v_y_max, v_x_min:v_x_max, :]
 
         if p_top > 0 or p_bottom > 0 or p_left > 0 or p_right > 0:
             chunk = np.pad(
                 chunk,
-                ((p_top, p_bottom), (p_left, p_right)),
+                ((p_top, p_bottom), (p_left, p_right), (0, 0)),
                 mode="constant",
                 constant_values=0.0,
             )
@@ -209,6 +222,8 @@ class GridManager:
         return utility.astype(np.float32)
 
     def is_within_bounds(self, x, y):
+        assert self.size_x is not None
+        assert self.size_y is not None
         is_x_valid = 0 <= x < self.size_x
         is_y_valid = 0 <= y < self.size_y
 
@@ -220,15 +235,7 @@ class GridManager:
         y_min, y_max = (ay - self.view_dist), (ay + self.view_dist + 1)
         x_min, x_max = (ax - self.view_dist), (ax + self.view_dist + 1)
 
-        layer_names = self.layer_names
-
-        obs_stack = []
-
-        for name in layer_names:
-            layer = getattr(self, name)
-            obs_stack.append(self._apply_padding(layer, x_max, x_min, y_max, y_min))
-
-        return np.stack(obs_stack, axis=-1)
+        return self._apply_padding(x_max, x_min, y_max, y_min)
 
     def resolve_search_action(self, agent_x, agent_y, action_idx):
         action_map = {
@@ -254,8 +261,6 @@ class GridManager:
             )
             return agent_x, agent_y, self.base_metabolism + 0.1
 
-        resistance = self.resistance_layer[int(target_y), int(target_x)]
-
         if dx == 0 and dy == 0:
             n_distance = 0.0
         else:
@@ -271,9 +276,13 @@ class GridManager:
         )
         gauss = np.exp(-0.5 * np.square(ax) / np.square(self.intimidation_sigma))
         kernel = np.outer(gauss, gauss)
+        if kernel.size == 0:
+            return kernel
         return kernel / kernel.max()
 
     def apply_intimidation(self, x, y):
+        assert self.size_x is not None
+        assert self.size_y is not None
         self.intimidation_layer[int(y), int(x)] = 1.0
 
         ix, iy = int(x), int(y)

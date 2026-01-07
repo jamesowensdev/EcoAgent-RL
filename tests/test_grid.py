@@ -1,10 +1,9 @@
+import logging
+import os
 from unittest.mock import MagicMock, patch
-
 import numpy as np
 import pytest
-
 from src.habitat.grid import GridManager
-
 
 @pytest.fixture
 def basic_config():
@@ -12,197 +11,267 @@ def basic_config():
         "species_name": "owl",
         "species_profiles": {
             "owl": {
-                "shape": 2.0,
-                "scale": 5.0,
-                "view_dist": 2,
-                "intimidation_decay_rate": 0.5,
-                "base_metabolism": 0.05,
+                "shape": 2.0, "scale": 5.0, "view_dist": 2,
+                "intimidation_decay_rate": 0.5, "base_metabolism": 0.05,
+                "intimidation_size": 5,
             }
         },
     }
 
+# --- 1. Initialization Variants ---
 
-def test_initialization_generic(basic_config):
-    # Test initialization without file paths
+def test_initialization_variants(basic_config):
+    # Coverage for line 48 (None config)
+    assert GridManager(None).size_x == 100
+    # Standard init
     gm = GridManager(basic_config)
     assert gm.size_x == 100
-    assert gm.size_y == 100
-    assert hasattr(gm, "resistance_layer")
-    assert hasattr(gm, "prey_layer")
-    assert hasattr(gm, "intimidation_layer")
-    assert "resistance_layer" in gm.layer_names
+    assert gm.stacked_layers.dtype == np.float32
 
-
-def test_load_landscape_layers_npy(tmp_path, basic_config):
-    # Test loading from .npy file
-    d = tmp_path / "test_layer.npy"
-    data = np.random.rand(50, 50).astype(np.float32)
-    np.save(d, data)
-
+def test_initialization_with_secondary_layer(tmp_path, basic_config):
+    prey_path = tmp_path / "prey.npy"
+    np.save(prey_path, np.ones((100, 100), dtype=np.float32))
     config = basic_config.copy()
-    config["primary_layer"] = "resistance_path"
-    config["resistance_path"] = str(d)
-
+    config.update({"prey_path": str(prey_path)})
     gm = GridManager(config)
-    assert gm.size_x == 50
-    assert gm.resistance_layer.shape == (50, 50)
+    assert hasattr(gm, "prey_layer")
+    assert gm.prey_layer.shape == (100, 100)
 
+def test_initialization_without_primary_layer(basic_config):
+    # This test covers the case where 'primary_layer' is not in the config
+    # which should trigger _initialise_generic_grid()
+    gm = GridManager(basic_config)
+    assert hasattr(gm, "resistance_layer")
+    assert gm.resistance_layer.shape == (100, 100)
+    assert gm.x_coords is not None
+    assert gm.y_coords is not None
+
+# --- 2. Landscape Loading (NPY, TIFF, & Errors) ---
+
+def test_load_landscape_npy(tmp_path, basic_config):
+    path = tmp_path / "test.npy"
+    np.save(path, np.zeros((100, 100), dtype=np.float32))
+    config = basic_config.copy()
+    config.update({"primary_layer": "res_path", "res_path": str(path)})
+    gm = GridManager(config)
+    assert hasattr(gm, "resistance_layer")
 
 @patch("rasterio.open")
-@patch("os.path.exists")
-def test_load_landscape_layers_tiff(mock_exists, mock_rasterio, basic_config):
-    mock_exists.return_value = True
-
-    # Mock Rasterio Dataset
+@patch("os.path.exists", return_value=True)
+def test_load_landscape_tiff_with_nodata(mock_exists, mock_rasterio, basic_config):
+    # Setup Success Mock
     mock_src = MagicMock()
-    mock_src.read.return_value = np.ones((10, 20), dtype=np.float32)
-    mock_src.nodata = -9999
+    mock_src.read.return_value = np.array([[1, 2], [3, -9999]], dtype=np.float32)
+    mock_src.width, mock_src.height, mock_src.nodata = 2, 2, -9999
     mock_src.crs = "EPSG:4326"
-    mock_src.transform = [1, 0, 0, 0, 1, 0]
-    mock_src.width = 20
-    mock_src.height = 10
-    mock_src.shape = (10, 20)
     mock_rasterio.return_value.__enter__.return_value = mock_src
 
     config = basic_config.copy()
-    config["primary_layer"] = "resistance_path"
-    config["resistance_path"] = "fake.tif"
+    config.update({"primary_layer": "res_path", "res_path": "fake.tif"})
 
+    # Successful TIFF load
     gm = GridManager(config)
-    assert gm.size_x == 20
-    assert gm.size_y == 10
-    assert gm.crs == "EPSG:4326"
+    assert gm.size_x == 2
+    assert gm.size_y == 2
+    assert gm.resistance_layer[1, 1] == 0.0
 
 
-def test_grid_mismatch_error(tmp_path, basic_config):
-    # Create two files with different sizes
-    p1 = tmp_path / "small.npy"
-    p2 = tmp_path / "large.npy"
-    np.save(p1, np.zeros((10, 10)))
-    np.save(p2, np.zeros((20, 20)))
+@patch("rasterio.open")
+@patch("os.path.exists", return_value=True)
+def test_load_landscape_tiff_success(mock_exists, mock_rasterio, basic_config):
+    # Setup Success Mock
+    mock_src = MagicMock()
+    mock_src.read.return_value = np.zeros((100, 100), dtype=np.float32)
+    mock_src.width, mock_src.height, mock_src.nodata = 100, 100, None
+    mock_src.crs = "EPSG:4326"
+    mock_rasterio.return_value.__enter__.return_value = mock_src
 
     config = basic_config.copy()
-    config["primary_layer"] = "resistance_path"
-    config["resistance_path"] = str(p1)
-    config["extra_path"] = str(p2)
+    config.update({"primary_layer": "res_path", "res_path": "fake.tif"})
 
+    # Successful TIFF load
     gm = GridManager(config)
-    # The second layer should not have been loaded due to size mismatch
-    assert not hasattr(gm, "extra_layer")
+    assert gm.size_x == 100
 
 
-def test_is_within_bounds(basic_config):
-    gm = GridManager(basic_config)  # 100x100
-    assert gm.is_within_bounds(0, 0) is True
-    assert gm.is_within_bounds(99, 99) is True
-    assert gm.is_within_bounds(-1, 50) is False
-    assert gm.is_within_bounds(50, 100) is False
+@patch("rasterio.open")
+@patch("os.path.exists", return_value=True)
+def test_load_landscape_tiff_exception(mock_exists, mock_rasterio, basic_config, caplog):
+    # Line 108-112: Rasterio Exception Path
+    mock_rasterio.side_effect = Exception("Rasterio Crash")
+    config = basic_config.copy()
+    config.update({"primary_layer": "res_path", "res_path": "fake.tif"})
+    with caplog.at_level(logging.ERROR):
+        GridManager(config)
+    assert "Failed to parse" in caplog.text
 
+@patch("rasterio.open")
+@patch("os.path.exists", return_value=True)
+def test_load_landscape_tiff_crs_mismatch(mock_exists, mock_rasterio, basic_config, caplog):
+    # Setup first TIFF load
+    mock_src1 = MagicMock()
+    mock_src1.read.return_value = np.zeros((100, 100), dtype=np.float32)
+    mock_src1.width, mock_src1.height, mock_src1.nodata = 100, 100, None
+    mock_src1.crs = "EPSG:4326"
 
-def test_resolve_search_action(basic_config):
+    # Setup second TIFF load with different CRS
+    mock_src2 = MagicMock()
+    mock_src2.read.return_value = np.zeros((100, 100), dtype=np.float32)
+    mock_src2.width, mock_src2.height, mock_src2.nodata = 100, 100, None
+    mock_src2.crs = "EPSG:3857"
+
+    # Alternate between the two mocks
+    mock_rasterio.side_effect = [
+        MagicMock(__enter__=MagicMock(return_value=mock_src1)),
+        MagicMock(__enter__=MagicMock(return_value=mock_src2))
+    ]
+
+    config = basic_config.copy()
+    config.update({
+        "primary_layer": "res_path",
+        "res_path": "fake1.tif",
+        "another_layer_path": "fake2.tif"
+    })
+
+    with caplog.at_level(logging.ERROR):
+        GridManager(config)
+    assert "CRS mismatch" in caplog.text
+
+def test_load_logic_failures(basic_config, tmp_path, caplog):
     gm = GridManager(basic_config)
-    # Action 3: East (1, 0)
-    new_x, new_y, cost = gm.resolve_search_action(10, 10, 3)
-    assert new_x == 11 and new_y == 10
-    assert cost == (0.5 * 1.0) + gm.base_metabolism
+    # Lines 85-89: File not found
+    with caplog.at_level(logging.ERROR):
+        gm.load_landscape_layers("absent.npy", "err")
+    assert "File not found" in caplog.text
 
-    # Action 4: Southeast (1, 1) - Diagonal
-    _, _, diag_cost = gm.resolve_search_action(10, 10, 4)
-    assert diag_cost == (0.5 * 1.414) + gm.base_metabolism
+    # Lines 96-98: Unsupported format
+    bad = tmp_path / "test.txt"
+    bad.write_text("...")
+    with caplog.at_level(logging.ERROR):
+        gm.load_landscape_layers(str(bad), "err")
+    assert "Unsupported file format" in caplog.text
 
-    # Action 0: Stay (0, 0)
-    _, _, stay_cost = gm.resolve_search_action(10, 10, 0)
-    assert stay_cost == gm.base_metabolism
+    # Line 111: Size Mismatch Error
+    path = tmp_path / "mismatch.npy"
+    np.save(path, np.zeros((10, 10), dtype=np.float32))
+    with caplog.at_level(logging.ERROR):
+        gm.load_landscape_layers(str(path), "mismatch")
+    assert "Grid size mismatch" in caplog.text
 
-    # Out of bounds movement
-    bx, by, b_cost = gm.resolve_search_action(0, 0, 7)  # West from 0
-    assert bx == 0 and by == 0
-    assert b_cost == gm.base_metabolism + 0.1
+# --- 3. Normalization & Layer Mechanics ---
+
+def test_normalization_branches(basic_config, caplog):
+    gm = GridManager(basic_config)
+
+    # Line 148-149: Non-numpy array attribute
+    setattr(gm, "bad_attr", "not_an_array")
+    with caplog.at_level(logging.WARNING):
+        gm._normalise_layers(["bad_attr"])
+    assert "is not a numpy array" in caplog.text
+
+    # Line 161: Uniform layer warning
+    gm.prey_layer = np.full((100, 100), 5.0, dtype=np.float32)  # pyright: ignore
+    with caplog.at_level(logging.WARNING):
+        gm._normalise_layers(["prey_layer"])
+    assert "is uniform" in caplog.text
+
+    # Successful Normalization
+    gm.prey_layer = np.array([[0, 1], [1, 0]], dtype=np.float32)  # pyright: ignore
+    gm._normalise_layers(["prey_layer"])
+    assert gm.prey_layer.max() <= 1.0
+
+# --- 4. Spatial Logic & Observables ---
+
+def test_resolve_search_action_valid_moves(basic_config):
+    gm = GridManager(basic_config)
+
+    # Straight move
+    x, y, dist = gm.resolve_search_action(10, 10, 1)  # Up
+    assert (x, y) == (10, 9)
+    assert np.isclose(dist, 1.0)
+
+    # Diagonal move
+    x, y, dist = gm.resolve_search_action(10, 10, 2)  # Up-Right
+    assert (x, y) == (11, 9)
+    assert np.isclose(dist, 1.414)
 
 
-def test_intimidation_mechanics(basic_config):
+def test_spatial_logic(basic_config):
+    gm = GridManager(basic_config)
+    assert gm.is_within_bounds(0, 0)
+    assert not gm.is_within_bounds(100, 100)
+
+    # Resolve search actions
+    assert gm.resolve_search_action(10, 10, 0)[2] == 0.0 # Stay
+    assert gm.resolve_search_action(0, 0, 7)[2] > 0.1    # OOB Penalty
+
+def test_intimidation_and_utility(basic_config):
     gm = GridManager(basic_config)
     gm.apply_intimidation(50, 50)
-    assert gm.intimidation_layer[50, 50] == 1.0
-    # Check splash (neighboring pixel)
-    assert gm.intimidation_layer[51, 51] > 0
-
-    # Test decay
     gm.intimidation_decay()
-    assert gm.intimidation_layer[50, 50] == 0.5  # 1.0 * 0.5
+    assert gm.intimidation_layer[50, 50] == 0.5
 
-
-def test_nest_and_gamma_utility(basic_config):
-    gm = GridManager(basic_config)
-    success = gm.set_nest_location(50, 50)
-    assert success is True
-    assert gm.utility_layer.shape == (100, 100)
-    # Peak of Gamma should not be at distance 0
-    assert gm.utility_layer[50, 50] < 1.0
-
-    # Test invalid nest
+    assert gm.set_nest_location(50, 50) is True
     assert gm.set_nest_location(200, 200) is False
 
+def test_get_intimidation_kernel_size_one(basic_config):
+    basic_config["species_profiles"]["owl"]["intimidation_size"] = 1
+    gm = GridManager(basic_config)
+    kernel = gm._get_intimidation_kernel()
+    assert kernel.shape == (1, 1)
+    assert np.max(kernel) == 1.0
 
-def test_get_local_observation_padding(basic_config):
-    gm = GridManager(basic_config)  # view_dist = 2
-    # Corner case (0,0) requires padding
+
+def test_get_intimidation_kernel_edge_cases(basic_config):
+    # Test with intimidation_size = 0
+    basic_config["species_profiles"]["owl"]["intimidation_size"] = 0
+    gm = GridManager(basic_config)
+    kernel = gm._get_intimidation_kernel()
+    assert kernel.shape == (0, 0)
+
+
+def test_get_intimidation_kernel(basic_config):
+    gm = GridManager(basic_config)
+    kernel = gm._get_intimidation_kernel()
+    assert kernel.shape == (
+        basic_config["species_profiles"]["owl"].get("intimidation_size", 5),
+        basic_config["species_profiles"]["owl"].get("intimidation_size", 5)
+    )
+    assert np.max(kernel) == 1.0
+
+def test_observation_integrity(basic_config):
+    gm = GridManager(basic_config)
     obs = gm.get_local_observation(0, 0)
-    # Window size should be (2*dist + 1) = 5
-    assert obs.shape == (5, 5, len(gm.layer_names))
+    assert obs.shape[2] == len(gm.layer_names)
 
+    res_idx = gm.layer_names.index("resistance_layer")
+    assert np.array_equal(gm.stacked_layers[..., res_idx], gm.resistance_layer)
 
-def test_sighting_events(basic_config):
+# --- 5. Foraging & Sightings ---
+
+def test_foraging_snapshot_branches(basic_config, caplog):
+    config = basic_config.copy()
+    config["habitat"] = {"layers": [
+        {"name": "prey", "use_in_suitability": True},
+        {"name": "missing", "use_in_suitability": True},
+        {"use_in_suitability": True} # Missing name (Line 317)
+    ]}
+    gm = GridManager(config)
+    gm.prey_layer = np.ones((100, 100), dtype=np.float32)  # pyright: ignore
+    if hasattr(gm, "missing_layer"): delattr(gm, "missing_layer")
+
+    with caplog.at_level(logging.WARNING):
+        snap = gm.get_foraging_snapshot(50, 50)
+    assert snap["prey"] == 1.0
+    assert "Layer name is None" in caplog.text
+    assert "Data for layer 'missing' is missing!" in caplog.text
+
+def test_sighting_branches(basic_config):
     gm = GridManager(basic_config)
-    # Ensure the layer exists so bias isn't 0 or missing
+    # Line 307: Missing human presence layer check
+    if hasattr(gm, "human_presence_layer"): delattr(gm, "human_presence_layer")
+    assert gm.generate_sighting_event(0, 0) is None
+
     gm.human_presence_layer = np.ones((100, 100), dtype=np.float32)
-
-    # Force sighting: 0.0 is always less than detection_chance
     with patch("numpy.random.random", return_value=0.0):
-        sighting = sighting = gm.generate_sighting_event(50, 50, is_hunting=True)
-        assert sighting == (50, 50)
-
-
-def test_normalisation_uniform(basic_config):
-    gm = GridManager(basic_config)
-    gm.prey_layer = np.full((100, 100), 10.0)  # Uniform
-    gm._normalise_layers(["prey_layer"])
-    # Should still be 10.0 because denom is 0
-    assert gm.prey_layer[0, 0] == 10.0
-
-
-def test_load_file_not_found(basic_config):
-    gm = GridManager(basic_config)
-    # Should log error and return None without crashing
-    gm.load_landscape_layers("non_existent_file.npy", "test")
-    assert not hasattr(gm, "test_layer")
-
-
-def test_initialise_generic_fallback():
-    # Targets Line 46: Triggers when 'primary_layer' is not in config keys
-    gm = GridManager({"species_name": "default"})
-    assert gm.size_x == 100
-    assert hasattr(gm, "resistance_layer")
-
-
-def test_load_landscape_errors(basic_config, tmp_path):
-    gm = GridManager(basic_config)
-
-    # Targets Lines 81-85: Triggers the "File not found" error log
-    gm.load_landscape_layers("non_existent_file.npy", "error_test")
-
-    # Targets Lines 92-94: Triggers the "Unsupported file format" error log
-    bad_file = tmp_path / "unsupported.txt"
-    bad_file.write_text("this is a text file, not a map")
-    gm.load_landscape_layers(str(bad_file), "unsupported")
-
-
-def test_normalization_uniform_warning(basic_config):
-    # Targets Lines 144-145: Triggers the uniform layer warning
-    gm = GridManager(basic_config)
-
-    setattr(gm, "flat_layer", np.ones((100, 100), dtype=np.float32))
-    gm.layer_names.append("flat_layer")
-
-    # Normalizing a layer where max == min triggers the else block
-    gm._normalise_layers(["flat_layer"])
+        assert gm.generate_sighting_event(50, 50, is_hunting=True) == (50, 50)

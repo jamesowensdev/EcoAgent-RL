@@ -1,5 +1,5 @@
 import pytest
-
+import logging
 from src.agents.agent import ForagingAgent
 
 
@@ -69,3 +69,10 @@ def test_agent_reset_clears_all_states(agent_config):
     assert agent.has_prey is False
     assert agent.total_distance_traveled == 0.0
     assert agent.is_at_nest is True
+
+
+def test_energy_warning(agent_config, caplog):
+    agent = ForagingAgent(agent_config, start_x=10, start_y=10)
+    with caplog.at_level(logging.WARNING):
+        agent.apply_energetics(0.6)
+    assert "Excessive energy consumption detected" in caplog.text

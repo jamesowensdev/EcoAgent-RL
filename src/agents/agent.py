@@ -35,6 +35,7 @@ class ForagingAgent:
             self.logger.info("Agent died due to energy depletion")
 
     def update_location(self, new_x, new_y, nest_x, nest_y):
+        old_x, old_y = self.x, self.y
         self.x = float(new_x)
         self.y = float(new_y)
         nest_transition = False
@@ -48,7 +49,7 @@ class ForagingAgent:
         elif nest_transition and not self.is_at_nest:
             self.logger.info("Agent left the nest")
 
-        dist = np.sqrt((new_x - self.x) ** 2 + (new_y - self.y) ** 2)
+        dist = np.sqrt((self.x - old_x) ** 2 + (self.y - old_y) ** 2)
         self.total_distance_traveled += dist
 
         return dist

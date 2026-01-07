@@ -1,5 +1,5 @@
 import pytest
-
+import logging
 from src.biology.energetics import Energetics
 
 
@@ -13,6 +13,15 @@ def energetics_config():
         "hunt_cost": 0.1,
         "prey_penalty": 1.5,
     }
+
+
+def test_init_with_no_config():
+    eng = Energetics(config=None)
+    assert eng.bmr == 0.005
+    assert eng.move_coeff == 0.01
+    assert eng.rest_gain == 0.02
+    assert eng.hunt_cost == 0.05
+    assert eng.prey_penalty == 1.2
 
 
 def test_bmr_only(energetics_config):
@@ -60,3 +69,21 @@ def test_no_recovery_with_prey(energetics_config):
         resistance=0.0, distance=0, is_at_nest=True, has_prey=True
     )
     assert cost == 0.01
+
+
+def test_invalid_resistance_warning(caplog):
+    eng = Energetics()
+    with caplog.at_level(logging.WARNING):
+        eng.calculate_step_cost(resistance=1.5, distance=1)
+        assert "Invalid resistance value" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        eng.calculate_step_cost(resistance=-0.5, distance=1)
+        assert "Invalid resistance value" in caplog.text
+
+
+def test_negative_distance_warning(caplog):
+    eng = Energetics()
+    with caplog.at_level(logging.WARNING):
+        eng.calculate_step_cost(resistance=0.5, distance=-1)
+        assert "Distance value is negative" in caplog.text
