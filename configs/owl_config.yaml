@@ -1,3 +1,15 @@
-# Project: EcoAgent-RL
-# File: configs/owl_config.yaml
+# Outlining example config
 
+habitat:
+  layers:
+    - name: "grassland_prey"
+      path: "data/grassland.tif"
+      use_in_suitability: true
+      weight: 0.8
+    - name: "woodland_cover"
+      path: "data/forest.tif"
+      use_in_suitability: true
+      weight: 0.2
+    - name: "resistance"
+      path: "data/resistance.tif"
+      use_in_suitability: false

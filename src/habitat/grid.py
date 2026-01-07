@@ -1,13 +1,14 @@
-import logging
 import os
 
 import numpy as np
 import rasterio
 
+from src.utils.logger import setup_logger
+
 
 class GridManager:
     def __init__(self, config):
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger("GRID")
         self.config = config
 
         self.species = self.config.get("species_name", "default_species")
@@ -254,14 +255,13 @@ class GridManager:
             return agent_x, agent_y, self.base_metabolism + 0.1
 
         resistance = self.resistance_layer[int(target_y), int(target_x)]
+
         if dx == 0 and dy == 0:
             n_distance = 0.0
         else:
             n_distance = 1.414 if dx != 0 and dy != 0 else 1.0
 
-        energy_cost = (resistance * n_distance) + self.base_metabolism
-
-        return target_x, target_y, energy_cost
+        return target_x, target_y, n_distance
 
     def _get_intimidation_kernel(self):
         ax = np.linspace(
@@ -312,3 +312,25 @@ class GridManager:
             return (agent_x, agent_y)
 
         return None
+
+    def get_foraging_snapshot(self, x, y):
+        snapshot = {}
+
+        for layer_cfg in self.config["habitat"]["layers"]:
+            if layer_cfg.get("use_in_suitability", False):
+                layer_name = layer_cfg.get("name")
+
+                if layer_name is None:
+                    self.logger.warning(f"Layer name is None for {layer_cfg}")
+                    continue
+
+                layer_data = getattr(self, f"{layer_name}_layer", None)
+
+                if layer_data is not None:
+                    val = float(layer_data[int(y), int(x)])
+                    snapshot[layer_name] = val
+                else:
+                    self.logger.error(f"Data for layer '{layer_name}' is missing!")
+                    snapshot[layer_name] = 0.0
+
+        return snapshot
